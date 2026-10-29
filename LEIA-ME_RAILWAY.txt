@@ -1,0 +1,34 @@
+SERVIDOR DO RP GAME NO RAILWAY (passo a passo, da pra fazer pelo celular)
+
+O que e isso: um servidor SEM tela, que roda 24h. Ele tem os 4 servidores (salas) dentro dele.
+Voce so precisa de UM servico no Railway e UM endereco.
+
+1) Crie conta no GitHub (github.com) e no Railway (railway.com; entre com o GitHub).
+
+2) No GitHub: crie um repositorio novo (pode ser privado).
+   Add file > Upload files > escolha TODOS os arquivos desta pasta de uma vez
+   (Dockerfile, project.godot, main.tscn, servidor_main.gd, rede.gd, servidor.gd, itens.gd, catalogo.gd, config_cidade.gd)
+   > Commit changes.
+   Pode enviar soltos, sem pasta: o Dockerfile arruma.
+
+3) No Railway: New Project > Deploy from GitHub repo > escolha o repositorio.
+   Ele acha o Dockerfile sozinho e faz o build (demora alguns minutos na primeira vez).
+
+4) Volume (IMPORTANTE, senao as contas somem toda vez que o servidor reinicia):
+   no servico, adicione um Volume e coloque o caminho de montagem (mount path) como:  /data
+
+5) Endereco publico: no servico, Settings > Networking > Generate Domain.
+   Vai gerar algo como  rpgame-production.up.railway.app
+   (se ele perguntar a porta, use a que ele sugerir; o servidor le a variavel PORT sozinho)
+
+6) Confira em Deployments > Logs. Tem que aparecer:
+   [Servidor] rodando. Servidores (salas): 4 | maximo por sala: 32
+
+7) No JOGO: abra  sistema/rede.gd  e troque a linha
+      const SERVIDOR_URL = "wss://COLOQUE_AQUI_O_DOMINIO_DO_RAILWAY"
+   por
+      const SERVIDOR_URL = "wss://rpgame-production.up.railway.app"     (o seu dominio, com wss:// na frente e sem porta)
+   Exporte o APK de novo.
+
+OBS: sempre que mudar sistema/servidor.gd ou sistema/rede.gd no jogo, copie os mesmos arquivos para o repositorio do servidor
+(o Railway reinicia sozinho com a mudanca). Os nomes dos menus do Railway podem mudar um pouco com o tempo.

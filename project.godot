@@ -1,0 +1,13 @@
+; Projeto do SERVIDOR (sem graficos). Roda no Railway/VPS.
+config_version=5
+
+[application]
+
+config/name="RP Servidor"
+run/main_scene="res://main.tscn"
+run/max_fps=30
+
+[autoload]
+
+Servidor="*res://sistema/servidor.gd"
+Rede="*res://sistema/rede.gd"
