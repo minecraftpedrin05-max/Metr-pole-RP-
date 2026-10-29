@@ -17,8 +17,18 @@ const UPGRADE_VEL = 0.10
 const UPGRADE_FORCA = 0.12
 const VENDA_CASA = 0.7
 
+# Tag de verificado: aparece depois do nome do jogador (dada pelo painel de admin).
+# Se o seu celular mostrar um quadradinho no lugar, troque por "✔" (sem o emoji) ou por " [V]".
+const TAG_VERIFICADO = "✔️"
+# Caracteres que NAO podem ser usados no nome do personagem (parecem a tag de verificado ou sao invisiveis):
+# ✔ ✓ ✅ ☑ 🗸 🗹 √ e espacos de largura zero
+const SIMBOLOS_PROIBIDOS = [0x2714, 0x2713, 0x2705, 0x2611, 0x1F5F8, 0x1F5F9, 0x221A, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF]
+
 const VEICULOS = {
-	"m4gt3": {"nome": "BMW M4 GT3", "preco": 18000},
+	"m4gt3": {"nome": "BMW M4 GT3", "preco": 18000, "tipo": "carro"},
+	"mt09": {"nome": "Yamaha MT-09 SP (moto)", "preco": 3500, "tipo": "moto"},
+	"s1000rr": {"nome": "BMW S1000RR (moto)", "preco": 6000, "tipo": "moto"},
+	"cbr650r": {"nome": "Honda CBR650R (moto)", "preco": 3000, "tipo": "moto"},
 }
 
 const EMPREGOS = {
@@ -60,6 +70,14 @@ const LOJAS = {
 	"mercado": {"nome": "Mercado", "itens": {"agua": 5, "refrigerante": 8, "sanduiche": 12, "marmita": 25, "galao": 90, "kit_reparo": 150}},
 	"roupas": {"nome": "Loja de Roupas", "roupas": true},
 }
+
+
+static func nome_proibido(n):
+	var t = str(n)
+	for i in range(t.length()):
+		if t.unicode_at(i) in SIMBOLOS_PROIBIDOS:
+			return true
+	return false
 
 
 static func cor(id):
