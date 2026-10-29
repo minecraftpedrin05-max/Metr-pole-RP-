@@ -19,7 +19,7 @@ var contas = {}
 var peer_conta = {}
 var conta_peer = {}
 var online = {}
-var mundo = {"veiculos": {}, "numeros": {}, "propriedades": {}, "prox": 1}
+var mundo = {"veiculos": {}, "numeros": {}, "propriedades": {}, "prox": 1, "dono": "", "admins": [], "bans": {}}
 var trocas = {}
 var prox_troca = 1
 var rng = RandomNumberGenerator.new()
@@ -123,6 +123,11 @@ func _carregar_mundo():
 		mundo["numeros"] = d.get("numeros", {})
 		mundo["propriedades"] = d.get("propriedades", {})
 		mundo["prox"] = int(d.get("prox", 1))
+		mundo["dono"] = str(d.get("dono", ""))
+		var adm = d.get("admins", [])
+		mundo["admins"] = adm if adm is Array else []
+		var bn = d.get("bans", {})
+		mundo["bans"] = bn if bn is Dictionary else {}
 	for vid in mundo["veiculos"].keys():
 		var v = mundo["veiculos"][vid]
 		v["ativo_por"] = ""
@@ -151,6 +156,7 @@ func _conta_padrao(cid):
 	return {
 		"id": cid, "criado": false, "nome": "", "numero": "", "criado_em": 0,
 		"dinheiro": 10000000, "banco": 99999999, "fome": 100.0, "sede": 100.0,
+		"verificado": false, "mudo_ate": 0,
 		"inventario": {}, "aparencia": {}, "guarda_roupa": [],
 		"contatos": [], "mensagens": [], "extrato": [],
 		"docs": {"rg": {}, "cnh": null}, "emprego": "civil",
@@ -202,15 +208,23 @@ func entrar(peer, cid, sala = 1):
 	cid = str(cid)
 	sala = int(sala)
 	if sala < 1 or sala > SALAS:
-		Rede.enviar_cliente(peer, "entrada_negada", {"msg": "Servidor inválido."})
+		_negar(peer, "Servidor inválido.")
 		return false
 	if not _id_valido(cid):
-		Rede.enviar_cliente(peer, "entrada_negada", {"msg": "Conta inválida."})
+		_negar(peer, "Conta inválida.")
 		return false
+	# banido nao entra no online (quem joga offline/hospeda no proprio aparelho, peer 1, nunca e barrado)
+	if peer != 1:
+		var ban = _ban_ativo(cid)
+		if ban != null:
+			Rede.enviar_cliente(peer, "banido", {"msg": _texto_ban(ban)})
+			get_tree().create_timer(0.7).timeout.connect(Rede.derrubar.bind(peer))
+			_log("tentou entrar banido " + cid + " peer " + str(peer))
+			return false
 	if peer_conta.has(peer):
 		sair(peer)
 	if _jogadores_na_sala(sala, cid) >= MAX_POR_SALA:
-		Rede.enviar_cliente(peer, "entrada_negada", {"msg": "O Servidor " + str(sala) + " está lotado."})
+		_negar(peer, "O Servidor " + str(sala) + " está lotado.")
 		return false
 	if conta_peer.has(cid) and conta_peer[cid] != peer:
 		var velho = conta_peer[cid]
@@ -223,6 +237,25 @@ func entrar(peer, cid, sala = 1):
 		_salvar_conta(c)
 	peer_conta[peer] = cid
 	conta_peer[cid] = peer
+	# o primeiro a entrar vira DONO (offline/hospedando: quem esta no aparelho; servidor dedicado: o primeiro a conectar)
+	var dono_atual = str(mundo["dono"])
+	var dono_env = OS.get_environment("DONO_ID").strip_edges().to_lower()
+	var sem_dono = dono_atual == ""
+	var dono_sumiu = dono_atual != "" and dono_atual != cid and not _conta_existe(dono_atual)
+	# servidor dedicado: se a variavel DONO_ID (Railway) existir, so essa conta vira dono; senao, o primeiro a entrar
+	var vira_dono = false
+	if peer == 1:
+		vira_dono = sem_dono or dono_sumiu
+	elif Rede.modo == "dedicado":
+		if dono_env != "":
+			vira_dono = cid == dono_env and dono_atual != cid
+		else:
+			vira_dono = sem_dono
+	if vira_dono:
+		mundo["dono"] = cid
+		mundo["admins"].erase(cid)
+		_salvar_mundo()
+		_log("dono definido " + cid)
 	var p = c["pos"]
 	online[peer] = {"sala": sala, "pos": Vector3(float(p[0]), float(p[1]), float(p[2])), "rot": 0.0, "emote": 0, "em_carro": false,
 		"carro_pos": LONGE, "carro_rot": 0.0, "carro_vid": "", "t": Time.get_ticks_msec() / 1000.0, "ult_msg": 0.0, "ult_chat": 0.0,
@@ -230,7 +263,13 @@ func entrar(peer, cid, sala = 1):
 	_push(peer)
 	Rede.enviar_cliente(peer, "tempo", _tempo_dict())
 	_log("entrou " + cid + " peer " + str(peer) + " servidor " + str(sala))
+	print("[servidor] entrou conta ", cid, " peer ", peer, " sala ", sala, " criado=", c["criado"])
 	return true
+
+
+func _negar(peer, msg):
+	print("[servidor] entrada negada para peer ", peer, ": ", msg)
+	Rede.enviar_cliente(peer, "entrada_negada", {"msg": msg})
 
 
 func sair(peer):
@@ -391,7 +430,8 @@ func estado_cliente(c):
 		"fome": c["fome"], "sede": c["sede"], "inventario": c["inventario"], "peso": peso_total(c), "capacidade": Itens.CAPACIDADE_KG,
 		"aparencia": c["aparencia"], "guarda_roupa": c["guarda_roupa"], "contatos": c["contatos"], "mensagens": c["mensagens"],
 		"extrato": c["extrato"], "docs": c["docs"], "emprego": c["emprego"], "veiculos": veics, "propriedades": props,
-		"casas_vendidas": donos, "pos": c["pos"]}
+		"casas_vendidas": donos, "pos": c["pos"], "papel": papel_de(c["id"]), "verificado": bool(c.get("verificado", false)),
+		"nome_exib": _nome_exib(c), "adm": _info_admin(c)}
 
 
 # ---------- utilidades ----------
@@ -549,6 +589,8 @@ func op_criar_personagem(peer, c, a):
 	var nome = _limpar_texto(a.get("nome", ""), 16)
 	if nome.length() < 3:
 		return _err("Nome muito curto.")
+	if Cat.nome_proibido(nome):
+		return _err("Esse símbolo não pode ser usado no nome.")
 	var vis = _validar_visual(c, a.get("aparencia", {}), true)
 	if vis == null:
 		return _err("Aparência inválida.")
@@ -1110,7 +1152,7 @@ func op_emprego(peer, c, a):
 
 
 func _doc_publico(ct):
-	return {"nome": ct["nome"], "rg": ct["docs"]["rg"], "cnh": ct["docs"]["cnh"], "numero": ct["numero"], "emprego": ct["emprego"]}
+	return {"nome": _nome_exib(ct), "rg": ct["docs"]["rg"], "cnh": ct["docs"]["cnh"], "numero": ct["numero"], "emprego": ct["emprego"]}
 
 
 func op_doc_consultar(peer, c, a):
@@ -1217,6 +1259,471 @@ func op_troca_responder(peer, c, a):
 	return _ok("Troca concluída.")
 
 
+# ---------- administracao (dono, admins, banimento, verificado) ----------
+
+const LIMITE_SALDO = 9000000000000000
+
+
+func papel_de(cid):
+	if cid == "":
+		return "jogador"
+	if cid == str(mundo.get("dono", "")):
+		return "dono"
+	if cid in mundo["admins"]:
+		return "admin"
+	return "jogador"
+
+
+func _nivel(cid):
+	var p = papel_de(cid)
+	if p == "dono":
+		return 3
+	if p == "admin":
+		return 2
+	return 1
+
+
+func _nome_exib(c):
+	var n = str(c["nome"])
+	if bool(c.get("verificado", false)):
+		n += " " + Cat.TAG_VERIFICADO
+	return n
+
+
+func _conta_existe(cid):
+	return contas.has(cid) or FileAccess.file_exists(PASTA + "contas/" + cid + ".json")
+
+
+func _fmt_seg(seg):
+	seg = maxi(int(seg), 0)
+	if seg >= 86400:
+		return "%d d %d h" % [floori(seg / 86400.0), floori((seg % 86400) / 3600.0)]
+	if seg >= 3600:
+		return "%d h %d min" % [floori(seg / 3600.0), floori((seg % 3600) / 60.0)]
+	return "%d min" % maxi(1, int(ceil(seg / 60.0)))
+
+
+func _ban_ativo(cid) -> Variant:
+	var b = mundo["bans"].get(cid, null)
+	if b == null:
+		return null
+	var ate = int(b.get("ate", 0))
+	if ate > 0 and ate <= int(Time.get_unix_time_from_system()):
+		mundo["bans"].erase(cid)
+		_salvar_mundo()
+		return null
+	return b
+
+
+func _texto_ban(b):
+	var t = "VOCÊ FOI BANIDO\nTempo: "
+	var dur = int(b.get("dur", 0))
+	var ate = int(b.get("ate", 0))
+	if dur <= 0 or ate <= 0:
+		t += "permanente"
+	else:
+		t += _fmt_seg(dur * 60) + " (restam " + _fmt_seg(ate - int(Time.get_unix_time_from_system())) + ")"
+	t += "\nMotivo: " + str(b.get("motivo", "não informado"))
+	return t
+
+
+func _expulsar_peer(peer, msg, tipo):
+	if peer == 1:
+		return
+	Rede.enviar_cliente(peer, tipo, {"msg": msg})
+	get_tree().create_timer(0.7).timeout.connect(Rede.derrubar.bind(peer))
+
+
+func _info_admin(c):
+	if papel_de(c["id"]) == "jogador":
+		return {}
+	var agora = int(Time.get_unix_time_from_system())
+	var lista = []
+	for p2 in peer_conta.keys():
+		var ct = _conta_de(p2)
+		if ct == null or not ct["criado"]:
+			continue
+		lista.append({"peer": p2, "sala": _sala_de(p2), "nome": ct["nome"], "numero": ct["numero"], "papel": papel_de(ct["id"]),
+			"verificado": bool(ct.get("verificado", false)), "dinheiro": ct["dinheiro"], "banco": ct["banco"],
+			"mudo": int(ct.get("mudo_ate", 0)) > agora})
+	var bans = []
+	for cid in mundo["bans"].keys():
+		var b = _ban_ativo(cid)
+		if b != null:
+			bans.append({"conta": cid, "nome": _nome_de(cid), "motivo": str(b.get("motivo", "")), "ate": int(b.get("ate", 0)), "dur": int(b.get("dur", 0))})
+	var admins = []
+	for cid2 in mundo["admins"]:
+		admins.append({"conta": cid2, "nome": _nome_de(cid2)})
+	return {"online": lista, "bans": bans, "admins": admins, "clima": clima}
+
+
+func _exige_admin(c) -> Variant:
+	if papel_de(c["id"]) == "jogador":
+		return _err("Sem permissão.")
+	return null
+
+
+# alvo = peer de quem esta online, ou "numero" (telefone) para quem esta offline
+func _alvo_conta(a) -> Variant:
+	if a.has("alvo"):
+		return _conta_de(int(a.get("alvo", -1)))
+	var num = str(a.get("numero", "")).strip_edges()
+	if num != "":
+		return _conta_por_numero(num)
+	return null
+
+
+func _peer_de(ct):
+	return int(conta_peer.get(ct["id"], -1))
+
+
+func _atualizar_alvo(ct):
+	_salvar_conta(ct)
+	_push_conta(ct["id"])
+
+
+func op_admin_atualizar(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	return _ok("")
+
+
+func op_admin_dinheiro(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado (ele precisa ter criado o personagem).")
+	var campo = "dinheiro"
+	if str(a.get("tipo", "dinheiro")) == "banco":
+		campo = "banco"
+	var v = clampi(int(a.get("valor", 0)), -1000000000000, 1000000000000)
+	if v == 0:
+		return _err("Digite um valor diferente de zero.")
+	ct[campo] = clampi(int(ct[campo]) + v, 0, LIMITE_SALDO)
+	if campo == "banco":
+		_extrato(ct, "Ajuste da administração", v)
+	_log("admin " + c["id"] + " " + campo + " " + str(v) + " -> " + ct["id"])
+	_atualizar_alvo(ct)
+	var pa = _peer_de(ct)
+	if pa != -1 and pa != peer:
+		_aviso(pa, "A administração ajustou seu saldo: " + ("+" if v > 0 else "-") + " R$ " + str(abs(v)) + ".")
+	return _ok("Feito: " + ("+" if v > 0 else "-") + " R$ " + str(abs(v)) + " (" + campo + ") para " + str(ct["nome"]) + ".")
+
+
+func op_admin_verificado(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	var ligar = bool(a.get("valor", true))
+	ct["verificado"] = ligar
+	_log("admin " + c["id"] + " verificado " + str(ligar) + " -> " + ct["id"])
+	_atualizar_alvo(ct)
+	var pa = _peer_de(ct)
+	if pa != -1 and pa != peer:
+		_aviso(pa, "Você recebeu a tag de verificado!" if ligar else "Sua tag de verificado foi removida.")
+	return _ok(("Tag dada a " if ligar else "Tag removida de ") + str(ct["nome"]) + ".")
+
+
+func op_admin_papel(peer, c, a):
+	if papel_de(c["id"]) != "dono":
+		return _err("Só o dono pode promover ou rebaixar administradores.")
+	var ct = null
+	var cid = str(a.get("conta", ""))
+	if cid != "":
+		ct = _obter_conta(cid)
+	else:
+		ct = _alvo_conta(a)
+	if ct == null:
+		return _err("Jogador não encontrado.")
+	if ct["id"] == str(mundo["dono"]):
+		return _err("O dono já tem todos os poderes.")
+	var promover = bool(a.get("admin", true))
+	if promover:
+		if not (ct["id"] in mundo["admins"]):
+			mundo["admins"].append(ct["id"])
+	else:
+		mundo["admins"].erase(ct["id"])
+	_log("admin " + c["id"] + " papel admin=" + str(promover) + " -> " + ct["id"])
+	_push_conta(ct["id"])
+	var pa = _peer_de(ct)
+	if pa != -1 and pa != peer:
+		_aviso(pa, "Você agora é ADMINISTRADOR." if promover else "Você não é mais administrador.")
+	return _ok((str(ct["nome"]) + " agora é admin.") if promover else (str(ct["nome"]) + " não é mais admin."))
+
+
+func op_admin_banir(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null:
+		return _err("Jogador não encontrado.")
+	if ct["id"] == c["id"]:
+		return _err("Você não pode banir a si mesmo.")
+	if _nivel(ct["id"]) >= _nivel(c["id"]):
+		return _err("Você não pode banir alguém do mesmo nível ou maior.")
+	var minutos = clampi(int(a.get("minutos", 0)), 0, 5256000)
+	var motivo = _limpar_texto(a.get("motivo", ""), 120)
+	if motivo == "":
+		motivo = "Sem motivo informado"
+	var agora = int(Time.get_unix_time_from_system())
+	var ate = 0
+	if minutos > 0:
+		ate = agora + minutos * 60
+	var ban = {"ate": ate, "dur": minutos, "motivo": motivo, "por": str(c["nome"]), "t": agora}
+	mundo["bans"][ct["id"]] = ban
+	_log("admin " + c["id"] + " BAN " + str(minutos) + "min '" + motivo + "' -> " + ct["id"])
+	var pa = _peer_de(ct)
+	if pa != -1:
+		_expulsar_peer(pa, _texto_ban(ban), "banido")
+	return _ok(str(ct["nome"]) + " foi banido (" + ("permanente" if minutos == 0 else _fmt_seg(minutos * 60)) + ").")
+
+
+func op_admin_desbanir(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var cid = str(a.get("conta", ""))
+	if cid == "":
+		var ct = _alvo_conta(a)
+		if ct != null:
+			cid = ct["id"]
+	if cid == "" or not mundo["bans"].has(cid):
+		return _err("Esse jogador não está banido.")
+	mundo["bans"].erase(cid)
+	_log("admin " + c["id"] + " desbaniu " + cid)
+	return _ok("Banimento removido de " + _nome_de(cid) + ".")
+
+
+func op_admin_expulsar(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null:
+		return _err("Jogador não encontrado.")
+	if ct["id"] == c["id"] or _nivel(ct["id"]) >= _nivel(c["id"]):
+		return _err("Você não pode expulsar esse jogador.")
+	var pa = _peer_de(ct)
+	if pa == -1:
+		return _err("Esse jogador não está online.")
+	if pa == 1:
+		return _err("Não dá para expulsar quem está hospedando.")
+	var motivo = _limpar_texto(a.get("motivo", ""), 120)
+	if motivo == "":
+		motivo = "Sem motivo informado"
+	_expulsar_peer(pa, "VOCÊ FOI EXPULSO\nMotivo: " + motivo, "expulso")
+	_log("admin " + c["id"] + " expulsou " + ct["id"] + " '" + motivo + "'")
+	return _ok(str(ct["nome"]) + " foi expulso.")
+
+
+func op_admin_mutar(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	if ct["id"] != c["id"] and _nivel(ct["id"]) >= _nivel(c["id"]):
+		return _err("Você não pode silenciar esse jogador.")
+	var minutos = clampi(int(a.get("minutos", 0)), 0, 5256000)
+	if minutos == 0:
+		ct["mudo_ate"] = 0
+		_log("admin " + c["id"] + " tirou silencio de " + ct["id"])
+		_atualizar_alvo(ct)
+		return _ok(str(ct["nome"]) + " pode falar de novo.")
+	ct["mudo_ate"] = int(Time.get_unix_time_from_system()) + minutos * 60
+	_log("admin " + c["id"] + " silenciou " + ct["id"] + " " + str(minutos) + "min")
+	_atualizar_alvo(ct)
+	var pa = _peer_de(ct)
+	if pa != -1 and pa != peer:
+		_aviso(pa, "Você foi silenciado no chat por " + _fmt_seg(minutos * 60) + ".")
+	return _ok(str(ct["nome"]) + " silenciado por " + _fmt_seg(minutos * 60) + ".")
+
+
+func op_admin_ir(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null:
+		return _err("Jogador não encontrado.")
+	var pa = _peer_de(ct)
+	if pa == -1 or not online.has(pa) or pa == peer:
+		return _err("Esse jogador não está online (ou é você).")
+	if not _mesma_sala(peer, pa):
+		return _err("Ele está em outro servidor (sala " + str(_sala_de(pa)) + ").")
+	var pos = online[pa]["pos"] + Vector3(2.0, 0.0, 0.0)
+	online[peer]["pos"] = pos
+	Rede.enviar_cliente(peer, "teleportar", {"pos": pos})
+	return _ok("Teleportado até " + str(ct["nome"]) + ".")
+
+
+func op_admin_trazer(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null:
+		return _err("Jogador não encontrado.")
+	var pa = _peer_de(ct)
+	if pa == -1 or not online.has(pa) or pa == peer:
+		return _err("Esse jogador não está online (ou é você).")
+	if not _mesma_sala(peer, pa):
+		return _err("Ele está em outro servidor (sala " + str(_sala_de(pa)) + ").")
+	if _nivel(ct["id"]) > _nivel(c["id"]):
+		return _err("Você não pode puxar alguém de nível maior.")
+	var pos = online[peer]["pos"] + Vector3(2.0, 0.0, 0.0)
+	online[pa]["pos"] = pos
+	Rede.enviar_cliente(pa, "teleportar", {"pos": pos})
+	_aviso(pa, "A administração te levou até " + str(c["nome"]) + ".")
+	return _ok(str(ct["nome"]) + " foi trazido até você.")
+
+
+func op_admin_tp_poi(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var p = Cidade.poi(str(a.get("poi", "")))
+	if p == null:
+		return _err("Lugar inválido.")
+	var pos = p["pos"] + Vector3(0.0, 0.0, 3.0)
+	online[peer]["pos"] = pos
+	Rede.enviar_cliente(peer, "teleportar", {"pos": pos})
+	return _ok("Teleportado: " + str(p["nome"]) + ".")
+
+
+func op_admin_item(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	var item = str(a.get("item", ""))
+	if not Itens.existe(item):
+		return _err("Item inválido.")
+	var qtd = clampi(int(a.get("qtd", 1)), 1, 99)
+	if not _add_item(ct, item, qtd):
+		return _err("A mochila de " + str(ct["nome"]) + " não aguenta esse peso.")
+	_log("admin " + c["id"] + " item " + item + " x" + str(qtd) + " -> " + ct["id"])
+	_atualizar_alvo(ct)
+	var pa = _peer_de(ct)
+	if pa != -1 and pa != peer:
+		_aviso(pa, "A administração te deu " + str(qtd) + "x " + Itens.nome(item) + ".")
+	return _ok("Deu " + str(qtd) + "x " + Itens.nome(item) + " a " + str(ct["nome"]) + ".")
+
+
+func op_admin_carro(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	var modelo = str(a.get("modelo", ""))
+	if not Cat.VEICULOS.has(modelo):
+		return _err("Modelo inválido.")
+	var cor = _hex(a.get("cor", ""))
+	if cor == "":
+		cor = "#1b4fa0"
+	var total = 0
+	for vid in mundo["veiculos"].keys():
+		if mundo["veiculos"][vid]["dono"] == ct["id"]:
+			total += 1
+	if total >= 8:
+		return _err("Esse jogador já tem 8 veículos.")
+	var pos = Cidade.SPAWN
+	var pa = _peer_de(ct)
+	if pa != -1 and online.has(pa):
+		pos = online[pa]["pos"]
+	_criar_veiculo(ct["id"], modelo, cor, pos, 0.0, Cat.TANQUE_L)
+	_log("admin " + c["id"] + " carro " + modelo + " -> " + ct["id"])
+	_atualizar_alvo(ct)
+	if pa != -1 and pa != peer:
+		_aviso(pa, "A administração te deu um " + str(Cat.VEICULOS[modelo]["nome"]) + "! Chame pelo celular > Veículos.")
+	return _ok("Deu um " + str(Cat.VEICULOS[modelo]["nome"]) + " a " + str(ct["nome"]) + ".")
+
+
+func op_admin_emprego(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	var emp = str(a.get("emprego", ""))
+	if not Cat.EMPREGOS.has(emp):
+		return _err("Emprego inválido.")
+	ct["emprego"] = emp
+	_log("admin " + c["id"] + " emprego " + emp + " -> " + ct["id"])
+	_atualizar_alvo(ct)
+	return _ok(str(ct["nome"]) + " agora é " + str(Cat.EMPREGOS[emp]["nome"]) + ".")
+
+
+func op_admin_restaurar(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	ct["fome"] = 100.0
+	ct["sede"] = 100.0
+	_atualizar_alvo(ct)
+	return _ok("Fome e sede de " + str(ct["nome"]) + " restauradas.")
+
+
+func op_admin_veiculo(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var ct = _alvo_conta(a)
+	if ct == null or not ct["criado"]:
+		return _err("Jogador não encontrado.")
+	var vid = _ativo_de(ct["id"])
+	if vid == "":
+		return _err("Esse jogador não está com um veículo na rua.")
+	var v = _veic(vid)
+	v["dano"] = 0.0
+	v["comb"] = Cat.TANQUE_L
+	_atualizar_alvo(ct)
+	return _ok("Veículo de " + str(ct["nome"]) + " reparado e com tanque cheio.")
+
+
+func op_admin_aviso(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var texto = _limpar_texto(a.get("texto", ""), 140)
+	if texto == "":
+		return _err("Digite o aviso.")
+	for p2 in peer_conta.keys():
+		_aviso(p2, "[AVISO] " + texto)
+	_log("admin " + c["id"] + " aviso '" + texto + "'")
+	return _ok("Aviso enviado.")
+
+
+func op_admin_clima(peer, c, a):
+	var e = _exige_admin(c)
+	if e != null:
+		return e
+	var novo = str(a.get("clima", "sol"))
+	if novo != "sol" and novo != "chuva":
+		return _err("Clima inválido.")
+	clima = novo
+	clima_t = 0.0
+	clima_dur = rng.randf_range(600.0, 1200.0)
+	t_tempo = 30.0
+	return _ok("Clima: " + novo + ".")
+
+
 # ---------- chat ----------
 
 func op_chat(peer, c, a):
@@ -1227,11 +1734,14 @@ func op_chat(peer, c, a):
 	var agora = Time.get_ticks_msec() / 1000.0
 	if agora - o["ult_chat"] < 0.8:
 		return _err("Calma, você está falando rápido demais.")
+	var mudo_ate = int(c.get("mudo_ate", 0))
+	if mudo_ate > int(Time.get_unix_time_from_system()):
+		return _err("Você está silenciado. Faltam " + _fmt_seg(mudo_ate - int(Time.get_unix_time_from_system())) + ".")
 	o["ult_chat"] = agora
 	var canal = "local"
 	if str(a.get("canal", "local")) == "global":
 		canal = "global"
-	var msg = {"canal": canal, "de": c["nome"], "texto": texto}
+	var msg = {"canal": canal, "de": _nome_exib(c), "texto": texto}
 	for p2 in peer_conta.keys():
 		if not _mesma_sala(p2, peer):
 			continue # cada servidor tem o seu proprio chat
@@ -1346,7 +1856,7 @@ func _enviar_remotos():
 		if c == null or not c["criado"]:
 			continue
 		var o = online[peer]
-		var item = {"peer": peer, "nome": c["nome"], "pos": o["pos"], "rot": o["rot"], "emote": o["emote"], "em_carro": o["em_carro"], "ap": c["aparencia"]}
+		var item = {"peer": peer, "nome": c["nome"], "nome_exib": _nome_exib(c), "pos": o["pos"], "rot": o["rot"], "emote": o["emote"], "em_carro": o["em_carro"], "ap": c["aparencia"]}
 		if o["carro_vid"] != "":
 			var v = _veic(o["carro_vid"])
 			if v != null:

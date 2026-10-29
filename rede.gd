@@ -13,11 +13,11 @@ signal conectado_ok
 signal conexao_falhou
 signal rede_pronta
 
-const PORTA_PADRAO = 7777
+const PORTA_PADRAO = 8080
 # >>> COLOQUE AQUI o endereco do servidor publico (o dominio que o Railway gera).
 # Com dominio https use  wss://  (sem porta).  Ex.: "wss://rpgame-production.up.railway.app"
 # Para testar no seu PC/rede local use  ws://IP:7777  Ex.: "ws://192.168.0.10:7777"
-const SERVIDOR_URL = "wss://COLOQUE_AQUI_O_DOMINIO_DO_RAILWAY"
+const SERVIDOR_URL = "wss://metr-pole-rp-production.up.railway.app"
 const NUM_SALAS = 4
 
 var modo = "offline"
@@ -33,6 +33,13 @@ var t_pos = 0.0
 var versao_estado = 0
 var sala_atual = 0
 var aviso_menu = ""
+var saida_forcada = false   # banido/expulso: nao tenta reconectar sozinho
+# reconexao automatica (cliente caiu no meio do jogo)
+const MAX_TENTATIVAS = 6
+var reconectando = false
+var tentativas = 0
+var tok_reconexao = 0
+var agendado = false
 
 
 func _ready():
@@ -41,6 +48,7 @@ func _ready():
 	multiplayer.connection_failed.connect(_ao_falhar)
 	multiplayer.server_disconnected.connect(_ao_cair)
 	multiplayer.peer_disconnected.connect(_ao_sair_peer)
+	multiplayer.peer_connected.connect(_ao_entrar_peer)
 
 
 func _carregar_conta_id():
@@ -115,6 +123,10 @@ func servidor_dedicado(porta = 0):
 
 
 func _resetar():
+	saida_forcada = false
+	reconectando = false
+	agendado = false
+	tok_reconexao += 1
 	logado = false
 	sala_atual = 0
 	estado = {}
@@ -135,7 +147,7 @@ func desconectar():
 
 func pedir(op, args = {}):
 	if modo == "cliente":
-		if multiplayer.multiplayer_peer == null:
+		if not conectado():
 			return
 		rpc_id(1, "srv_pedir", op, args)
 	else:
@@ -145,6 +157,10 @@ func pedir(op, args = {}):
 func _ao_conectar():
 	# conectou no servidor: ainda NAO entrou em nenhum. Pede a lista de servidores; o jogador escolhe um.
 	meu_peer = multiplayer.get_unique_id()
+	if reconectando:
+		print("[cliente] reconectado, voltando para o servidor ", sala_atual)
+		rpc_id(1, "srv_entrar", conta_id, sala_atual)
+		return
 	rede_pronta.emit()
 	rpc_id(1, "srv_salas")
 
@@ -168,19 +184,91 @@ func entrar_sala(n):
 
 
 func _ao_falhar():
+	if reconectando:
+		_agendar_reconexao()
+		return
 	modo = "offline"
 	conexao_falhou.emit()
 
 
 func _ao_cair():
+	if reconectando:
+		_agendar_reconexao()
+		return
+	if saida_forcada:
+		_desistir(aviso_menu if aviso_menu != "" else "Você foi desconectado.")
+		return
+	# caiu no meio do jogo (logado numa sala): tenta voltar sozinho antes de desistir
+	if modo == "cliente" and logado and sala_atual > 0:
+		print("[cliente] conexão caiu, tentando reconectar...")
+		reconectando = true
+		tentativas = 0
+		logado = false
+		evento.emit("aviso", {"msg": "Conexão instável. Reconectando..."})
+		_agendar_reconexao()
+		return
+	_desistir("Conexão com o servidor perdida.")
+
+
+func _desistir(msg):
+	reconectando = false
+	agendado = false
+	tok_reconexao += 1
 	logado = false
 	modo = "offline"
-	aviso_menu = "Conexão com o servidor perdida."
-	evento.emit("aviso", {"msg": "Conexão com o servidor perdida."})
+	aviso_menu = msg
+	evento.emit("aviso", {"msg": msg})
 	evento.emit("desconectado", {})
 
 
+func _agendar_reconexao():
+	if agendado:
+		return
+	agendado = true
+	tok_reconexao += 1
+	tentativas += 1
+	if tentativas > MAX_TENTATIVAS:
+		_desistir("Não foi possível reconectar ao servidor.")
+		return
+	var t = tok_reconexao
+	var espera = minf(1.5 * tentativas, 6.0)
+	get_tree().create_timer(espera).timeout.connect(_tentar_reconectar.bind(t))
+
+
+func _tentar_reconectar(t):
+	if not reconectando or t != tok_reconexao:
+		return
+	print("[cliente] tentativa de reconexão ", tentativas, " de ", MAX_TENTATIVAS)
+	var velho = multiplayer.multiplayer_peer
+	if velho != null and not (velho is OfflineMultiplayerPeer):
+		velho.close()
+	var peer = WebSocketMultiplayerPeer.new()
+	var erro = peer.create_client(SERVIDOR_URL)
+	if erro != OK:
+		agendado = false
+		_agendar_reconexao()
+		return
+	multiplayer.multiplayer_peer = peer
+	agendado = false
+	# se em 10 s nao voltou (nem conectou, nem entrou), tenta de novo
+	get_tree().create_timer(10.0).timeout.connect(_reconexao_pendente.bind(t))
+
+
+func _reconexao_pendente(t):
+	if reconectando and t == tok_reconexao:
+		agendado = false
+		_agendar_reconexao()
+
+
+func _ao_entrar_peer(id):
+	# aparece no log do servidor (Railway > Deploy Logs)
+	if modo == "dedicado" or modo == "host":
+		print("[servidor] jogador conectou, peer ", id)
+
+
 func _ao_sair_peer(id):
+	if modo == "dedicado" or modo == "host":
+		print("[servidor] jogador saiu, peer ", id)
 	if multiplayer.is_server():
 		Servidor.sair(id)
 		Servidor.t_salas.erase(id)
@@ -220,7 +308,12 @@ func srv_pedir(op, args):
 func srv_entrar(cid, sala):
 	if not multiplayer.is_server():
 		return
-	Servidor.entrar(multiplayer.get_remote_sender_id(), cid, sala)
+	var quem = multiplayer.get_remote_sender_id()
+	print("[servidor] pedido de entrada: peer ", quem, " sala ", sala, " ativo=", Servidor.ativo)
+	if not Servidor.ativo:
+		enviar_cliente(quem, "entrada_negada", {"msg": "O servidor ainda está iniciando. Tente de novo em instantes."})
+		return
+	Servidor.entrar(quem, cid, sala)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -253,6 +346,11 @@ func _receber(nome, dados):
 		logado = true
 		versao_estado += 1
 		estado_mudou.emit()
+		if reconectando:
+			reconectando = false
+			tentativas = 0
+			print("[cliente] reconectado com sucesso")
+			evento.emit("aviso", {"msg": "Reconectado!"})
 		if modo == "cliente":
 			conectado_ok.emit()
 	elif nome == "stats":
@@ -270,7 +368,17 @@ func _receber(nome, dados):
 		offset_tempo = float(dados.get("unix", 0.0)) - Time.get_unix_time_from_system()
 		clima = str(dados.get("clima", "sol"))
 		evento.emit("tempo", dados)
+	elif nome == "banido" or nome == "expulso":
+		saida_forcada = true
+		aviso_menu = str(dados.get("msg", ""))
+		if reconectando:
+			_desistir(aviso_menu)
+			return
+		evento.emit(nome, dados)
 	else:
+		if nome == "entrada_negada" and reconectando:
+			_desistir(str(dados.get("msg", "Não foi possível voltar ao servidor.")))
+			return
 		evento.emit(nome, dados)
 
 
@@ -327,7 +435,7 @@ func _process(delta):
 	if not (d is Dictionary):
 		return
 	if modo == "cliente":
-		if multiplayer.multiplayer_peer != null:
+		if conectado():
 			rpc_id(1, "srv_pos", d)
 	else:
 		Servidor.relatar_pos(1, d)
