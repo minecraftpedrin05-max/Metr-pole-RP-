@@ -53,7 +53,11 @@ static func lista() -> Array:
 				"vip": vip,
 				"preco": int(PRECOS.get(id, PRECO_VIP)) if vip else 0,
 			})
-	saida.sort_custom(func(a, b): return (int(a["vip"]), a["nome"]) < (int(b["vip"]), b["nome"]))
+		# gratis primeiro, depois vip; dentro de cada grupo, por nome
+	saida.sort_custom(func(a, b):
+		if a["vip"] != b["vip"]:
+			return not a["vip"]
+		return a["nome"] < b["nome"])
 	_cache = saida
 	return saida
 
