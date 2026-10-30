@@ -19,7 +19,7 @@ COPY . /app
 
 # Os arquivos podem ter sido enviados soltos (sem a pasta "sistema"): arruma aqui.
 RUN mkdir -p /app/sistema \
-    && for f in rede servidor itens catalogo config_cidade; do \
+    && for f in rede servidor itens catalogo config_cidade personagens; do \
          if [ -f "/app/$f.gd" ]; then mv "/app/$f.gd" "/app/sistema/$f.gd"; fi; \
        done \
     && ls -R /app
