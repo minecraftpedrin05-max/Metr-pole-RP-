@@ -7,6 +7,7 @@ extends Node
 const Itens = preload("res://sistema/itens.gd")
 const Cat = preload("res://sistema/catalogo.gd")
 const Cidade = preload("res://sistema/config_cidade.gd")
+const Personagens = preload("res://sistema/personagens.gd")
 
 const PASTA = "user://servidor/"
 const LONGE = Vector3(1.0e9, 1.0e9, 1.0e9)
@@ -565,7 +566,7 @@ func _validar_visual(c, ap, criando):
 	var roupa = ap.get("roupa", {})
 	if not (roupa is Dictionary):
 		return null
-	var out = {"camisa": "", "calca": "", "chapeu": "", "oculos": "", "mochila": ""}
+	var out = {"camisa": "", "calca": "", "chapeu": "", "oculos": "", "mochila": "", "corrente": "", "relogio": ""}
 	for slot in out.keys():
 		var id = str(roupa.get(slot, ""))
 		if id == "":
@@ -582,7 +583,12 @@ func _validar_visual(c, ap, criando):
 		elif not (id in c["guarda_roupa"]):
 			return null
 		out[slot] = id
-	return {"skin": skin, "hair": hair, "style": style, "roupa": out}
+	# personagem 3D escolhido ("" = padrao). Gratis, ou ja comprado.
+	var modelo = str(ap.get("modelo", ""))
+	if modelo != "":
+		if not Personagens.liberado(modelo, c.get("personagens", [])):
+			modelo = ""
+	return {"skin": skin, "hair": hair, "style": style, "modelo": modelo, "roupa": out}
 
 
 func op_criar_personagem(peer, c, a):
