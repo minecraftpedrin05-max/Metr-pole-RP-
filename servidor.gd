@@ -7,7 +7,6 @@ extends Node
 const Itens = preload("res://sistema/itens.gd")
 const Cat = preload("res://sistema/catalogo.gd")
 const Cidade = preload("res://sistema/config_cidade.gd")
-const Personagens = preload("res://sistema/personagens.gd")
 
 const PASTA = "user://servidor/"
 const LONGE = Vector3(1.0e9, 1.0e9, 1.0e9)
@@ -51,6 +50,11 @@ func iniciar():
 	ativo = true
 	_carregar_mundo()
 	set_process(true)
+	# servidor dedicado: busca no site os codigos de MTP COINS resgatados
+	if Rede.modo == "dedicado" and not has_node("Coins"):
+		var cn = load("res://sistema/coins.gd").new()
+		cn.name = "Coins"
+		call_deferred("add_child", cn)
 
 
 func _notification(what):
@@ -107,7 +111,7 @@ func _salvar_mundo():
 
 
 func _salvar_conta(c):
-	_gravar_json(PASTA + "contas/" + c["id"] + ".json", c)
+	return _gravar_json(PASTA + "contas/" + c["id"] + ".json", c)
 
 
 func salvar_tudo():
@@ -161,6 +165,7 @@ func _conta_padrao(cid):
 		"verificado": false, "mudo_ate": 0,
 		"inventario": {}, "aparencia": {}, "guarda_roupa": [],
 		"contatos": [], "mensagens": [], "extrato": [],
+		"coins": 0, "coins_hist": [], "coins_ids": [],
 		"docs": {"rg": {}, "cnh": null}, "emprego": "civil",
 		"pos": [Cidade.SPAWN.x, Cidade.SPAWN.y, Cidade.SPAWN.z],
 	}
@@ -175,6 +180,7 @@ func _normalizar(c):
 		c["inventario"][k] = int(c["inventario"][k])
 	c["dinheiro"] = int(c["dinheiro"])
 	c["banco"] = int(c["banco"])
+	c["coins"] = int(c["coins"])
 	return c
 
 
@@ -429,7 +435,7 @@ func estado_cliente(c):
 	var donos = {}
 	for pid in mundo["propriedades"].keys():
 		donos[pid] = true
-	return {"criado": c["criado"], "nome": c["nome"], "numero": c["numero"], "dinheiro": c["dinheiro"], "banco": c["banco"],
+	return {"criado": c["criado"], "nome": c["nome"], "numero": c["numero"], "dinheiro": c["dinheiro"], "banco": c["banco"], "coins": int(c["coins"]), "coins_hist": c["coins_hist"],
 		"fome": c["fome"], "sede": c["sede"], "inventario": c["inventario"], "peso": peso_total(c), "capacidade": Itens.CAPACIDADE_KG,
 		"aparencia": c["aparencia"], "guarda_roupa": c["guarda_roupa"], "contatos": c["contatos"], "mensagens": c["mensagens"],
 		"extrato": c["extrato"], "docs": c["docs"], "emprego": c["emprego"], "veiculos": veics, "propriedades": props,
@@ -443,6 +449,56 @@ func _extrato(c, desc, valor):
 	c["extrato"].push_front({"t": int(Time.get_unix_time_from_system()), "desc": desc, "valor": valor})
 	while c["extrato"].size() > 30:
 		c["extrato"].pop_back()
+
+
+# ---------- MTP COINS (moeda paga) ----------
+
+func _coins_hist(c, desc, valor):
+	c["coins_hist"].push_front({"t": int(Time.get_unix_time_from_system()), "desc": desc, "valor": valor})
+	while c["coins_hist"].size() > 30:
+		c["coins_hist"].pop_back()
+
+
+# Credita um resgate vindo do site. Devolve true quando pode ser confirmado la
+# (creditado agora ou ja creditado antes) e false quando deve continuar pendente.
+func coins_creditar(chave, cid, coins) -> bool:
+	cid = str(cid).to_lower()
+	chave = str(chave)
+	coins = int(coins)
+	if chave == "" or not _id_valido(cid) or coins <= 0 or coins > 10000000:
+		print("[coins] resgate ignorado (dados invalidos): ", chave, " ", cid, " ", coins)
+		return false
+	var c = _obter_conta(cid)
+	if c == null:
+		return false  # essa conta ainda nao entrou neste servidor: fica pendente (o painel permite trocar o ID)
+	if chave in c["coins_ids"]:
+		return true
+	c["coins"] = int(c["coins"]) + coins
+	c["coins_ids"].append(chave)
+	while c["coins_ids"].size() > 300:
+		c["coins_ids"].pop_front()
+	_coins_hist(c, "Código resgatado", coins)
+	if not _salvar_conta(c):
+		# nao gravou em disco: desfaz para nao confirmar algo que pode se perder
+		c["coins"] = int(c["coins"]) - coins
+		c["coins_ids"].erase(chave)
+		c["coins_hist"].pop_front()
+		return false
+	_log("coins +" + str(coins) + " conta " + cid + " codigo " + chave.substr(0, 8) + "...")
+	if conta_peer.has(cid):
+		_aviso(conta_peer[cid], "Você recebeu %d MTP COINS!" % coins)
+		_push_conta(cid)
+	return true
+
+
+# Gasta coins (para futuras lojas pagas). Devolve true se tinha saldo.
+func coins_gastar(c, valor, desc) -> bool:
+	valor = int(valor)
+	if valor <= 0 or int(c["coins"]) < valor:
+		return false
+	c["coins"] = int(c["coins"]) - valor
+	_coins_hist(c, desc, -valor)
+	return true
 
 
 func _pagar(c, valor, metodo, desc):
@@ -566,7 +622,7 @@ func _validar_visual(c, ap, criando):
 	var roupa = ap.get("roupa", {})
 	if not (roupa is Dictionary):
 		return null
-	var out = {"camisa": "", "calca": "", "chapeu": "", "oculos": "", "mochila": "", "corrente": "", "relogio": ""}
+	var out = {"camisa": "", "calca": "", "chapeu": "", "oculos": "", "mochila": ""}
 	for slot in out.keys():
 		var id = str(roupa.get(slot, ""))
 		if id == "":
@@ -583,12 +639,7 @@ func _validar_visual(c, ap, criando):
 		elif not (id in c["guarda_roupa"]):
 			return null
 		out[slot] = id
-	# personagem 3D escolhido ("" = padrao). Gratis, ou ja comprado.
-	var modelo = str(ap.get("modelo", ""))
-	if modelo != "":
-		if not Personagens.liberado(modelo, c.get("personagens", [])):
-			modelo = ""
-	return {"skin": skin, "hair": hair, "style": style, "modelo": modelo, "roupa": out}
+	return {"skin": skin, "hair": hair, "style": style, "roupa": out}
 
 
 func op_criar_personagem(peer, c, a):

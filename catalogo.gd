@@ -26,6 +26,8 @@ const SIMBOLOS_PROIBIDOS = [0x2714, 0x2713, 0x2705, 0x2611, 0x1F5F8, 0x1F5F9, 0x
 
 const VEICULOS = {
 	"m4gt3": {"nome": "BMW M4 GT3", "preco": 18000, "tipo": "carro"},
+	"senna": {"nome": "McLaren Senna", "preco": 900000, "tipo": "carro"},
+	"corolla_pmerj": {"nome": "Corolla PMERJ (viatura)", "preco": 120000, "tipo": "carro"},
 	"gls580": {"nome": "Mercedes-Benz GLS 580", "preco": 180000, "tipo": "carro"},
 	"scania": {"nome": "Scania S730 V8 (caminhão)", "preco": 650000, "tipo": "carro"},
 	"koenigsegg": {"nome": "Koenigsegg Agera", "preco": 250000, "tipo": "carro"},
@@ -36,8 +38,10 @@ const VEICULOS = {
 
 const EMPREGOS = {
 	"civil": {"nome": "Civil", "salario": 0},
-	"policial": {"nome": "Policial", "salario": 600},
+	"policial": {"nome": "Policial", "salario": 600, "recrutamento": true},
 	"mecanico": {"nome": "Mecânico", "salario": 450},
+	"lixeiro": {"nome": "Lixeiro", "salario": 350},
+	"caminhoneiro": {"nome": "Caminhoneiro", "salario": 500, "exige_cnh": true},
 }
 
 # slot: camisa, calca, chapeu, oculos, mochila, corrente, relogio
